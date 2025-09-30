@@ -1,45 +1,88 @@
 import pandas as pd
 import dns.resolver
+import logging
+from typing import Tuple, Optional
 
-# Load the Excel file
-df = pd.read_excel('/home/ahmedz/Downloads/root.xlsx')
+# --- Configuration ---
+EXCEL_INPUT_PATH = '/mnt/c/Users/a/rootz.xlsx'
+EXCEL_OUTPUT_PATH = '/mnt/c/Users/a/root_updated.xlsx'
 
-print("Loaded Excel file with", len(df), "rows")
+EXPECTED_IP = '37.27.108.238'
+EXPECTED_NS_SUBSTRING = 'hosterz.net'
 
-# Create a new column to store the results
-df['A RECORD'] = ''
-df['NS RECORD'] = ''
-df['STATUS'] = ''
+# --- Logging setup ---
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-# Process each domain
-for index, row in df.iterrows():
-  domain = row['Domain']
-  print("Processing domain:", domain)
-  try:
-	  answers = dns.resolver.resolve(domain, 'A')
-	  a_record = ', '.join([str(rdata) for rdata in answers])
-	  answers = dns.resolver.resolve(domain, 'NS')
-	  ns_record = ', '.join([str(rdata) for rdata in answers])
-	  df.at[index, 'A RECORD'] = a_record
-	  df.at[index, 'NS RECORD'] = ns_record
-	  if '5.9.90.154' in a_record or 'hosterz.net' in ns_record:
-		  df.at[index, 'STATUS'] = 'Valid'
-	  else:
-		  df.at[index, 'STATUS'] = 'Invalid'
-  except dns.resolver.NXDOMAIN:
-	  print(f"Domain {domain} does not exist. Skipping...")
-	  df.at[index, 'STATUS'] = 'Domain does not exist'
-  except dns.resolver.NoAnswer:
-	  print(f"Domain {domain} did not return an answer. Skipping...")
-	  df.at[index, 'STATUS'] = 'No answer'
+def resolve_a_record(domain: str) -> Optional[str]:
+    """Resolve A record for a domain."""
+    try:
+        answers = dns.resolver.resolve(domain, 'A')
+        return ', '.join(str(rdata) for rdata in answers)
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException):
+        return None
 
-# Save the updated Excel file
-df.to_excel('/home/ahmedz/Downloads/root_updated.xlsx', index=False)
+def resolve_ns_record(domain: str) -> Optional[str]:
+    """Resolve NS record for a domain."""
+    try:
+        answers = dns.resolver.resolve(domain, 'NS')
+        return ', '.join(str(rdata).rstrip('.') for rdata in answers)  # Remove trailing dot
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException):
+        return None
 
-print("Updated Excel file saved to root_updated.xlsx")
+def determine_status(a_record: Optional[str], ns_record: Optional[str]) -> str:
+    """Determine domain status based on A and NS records."""
+    if a_record is None and ns_record is None:
+        return "Domain does not exist or no records found"
+    if (a_record and EXPECTED_IP in a_record) or (ns_record and EXPECTED_NS_SUBSTRING in ns_record):
+        return "Valid"
+    return "Invalid"
 
-# Check if all domains were processed
-if len(df) == len(df.dropna()):
-  print("All domains were processed successfully!")
-else:
-  print("Not all domains were processed. Check the output file for errors."
+def process_domain(domain: str) -> Tuple[str, str, str]:
+    """Process a single domain and return A, NS, and status."""
+    logging.info(f"Processing domain: {domain}")
+    
+    a_record = resolve_a_record(domain)
+    ns_record = resolve_ns_record(domain)
+    status = determine_status(a_record, ns_record)
+    
+    return (
+        a_record or '',
+        ns_record or '',
+        status
+    )
+
+def main():
+    # Load data
+    df = pd.read_excel(EXCEL_INPUT_PATH)
+    logging.info(f"Loaded Excel file with {len(df)} rows")
+
+    # Initialize result columns
+    df['A RECORD'] = ''
+    df['NS RECORD'] = ''
+    df['STATUS'] = ''
+
+    # Process each domain
+    for idx, row in df.iterrows():
+        domain = str(row['Domain']).strip()
+        if not domain:
+            df.at[idx, 'STATUS'] = 'Empty domain'
+            continue
+
+        a_rec, ns_rec, status = process_domain(domain)
+        df.at[idx, 'A RECORD'] = a_rec
+        df.at[idx, 'NS RECORD'] = ns_rec
+        df.at[idx, 'STATUS'] = status
+
+    # Save result
+    df.to_excel(EXCEL_OUTPUT_PATH, index=False)
+    logging.info(f"Updated Excel file saved to {EXCEL_OUTPUT_PATH}")
+
+    # Final check
+    unprocessed = df['STATUS'].isin(['Empty domain', 'Domain does not exist or no records found'])
+    if unprocessed.any():
+        logging.warning("Some domains were not processed successfully. Check the output file.")
+    else:
+        logging.info("All domains processed successfully!")
+
+if __name__ == "__main__":
+    main()
